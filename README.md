@@ -14,6 +14,23 @@ optimization is a runtime toggle, so each speed-up in the table below is measure
 |---|---|
 | ![Sunset](docs/sunset.png) | ![Above the clouds](docs/above.png) |
 
+## Demo
+
+All clips are rendered in real time by the engine itself (`--sequence`, captured headlessly), then encoded with ffmpeg.
+Click a clip for the full-quality 1080p MP4.
+
+**Flythrough:** low over the valley, then up through the cloud deck. Temporal reprojection holds up at high camera speed, and terrain occludes and pierces the clouds.
+
+[![Flythrough](docs/videos/flythrough.gif)](docs/videos/flythrough.mp4)
+
+**Time of day:** the sun sweeps from afternoon to sunset. Sky colour, cloud lighting, silver linings and terrain shading all come from the same atmosphere LUTs. Clouds are time-lapsed with the wind.
+
+[![Time of day](docs/videos/timeofday.gif)](docs/videos/timeofday.mp4)
+
+**Weather:** coverage builds from scattered cumulus to overcast. The weather map drives cloud placement and type, and the cloud shadow map darkens the terrain.
+
+[![Weather](docs/videos/weather.gif)](docs/videos/weather.mp4)
+
 ## Highlights
 
 - **40.8 ms → 2.38 ms GPU frame time (17×)** at 1920×1080 on an RTX 3050 Laptop GPU, measured
@@ -157,10 +174,13 @@ lighting parameters, debug views and a live per-pass GPU timing breakdown.
 | `--screenshot file.png [--shot noon\|sunset\|above] [--frames N]` | Render a converged frame and exit |
 | `--camera x,y,z,yawDeg,pitchDeg` / `--sun azDeg,elevDeg` / `--coverage v` | Scene overrides |
 | `--upscale 1\|2\|4` / `--debug-view N` / `--fly m/s` | Reconstruction and debugging |
+| `--sequence timeofday\|flythrough\|weather [--sequence-frames N] [--out-dir dir]` | Render a scripted clip as PNG frames |
 | `--hidden` / `--width W --height H` / `--exit-after N` | Headless runs |
 | `--renderdoc` | Load `renderdoc.dll` for in-app captures |
 
 The README images were produced with `--hidden --width 1920 --height 1080 --screenshot docs/<shot>.png --shot <shot>`.
+The clips were made with `--hidden --width 1920 --height 1080 --sequence <name> --out-dir frames/<name>`, followed by
+`ffmpeg -framerate 30 -i frames/<name>/frame_%04d.png -c:v libx264 -crf 20 -pix_fmt yuv420p docs/videos/<name>.mp4`.
 
 ## Profiling workflow
 

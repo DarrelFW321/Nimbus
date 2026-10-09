@@ -45,6 +45,9 @@ struct Options {
     float exposure = -1.0f;
     float flySpeed = 0.0f;  // --fly m/s: move the camera forward in screenshot mode (tests reprojection)
     int exitAfter = -1;     // --exit-after N: quit after N frames (smoke tests)
+    std::string sequence;   // --sequence timeofday|flythrough|weather: render a scripted clip
+    std::string outDir = "frames";  // --out-dir: where sequence frames are written
+    int sequenceFrames = 240;       // --sequence-frames
 };
 
 Options parseArgs(int argc, char** argv) {
@@ -68,6 +71,9 @@ Options parseArgs(int argc, char** argv) {
         else if (a == "--exposure") o.exposure = float(std::atof(next().c_str()));
         else if (a == "--fly") o.flySpeed = float(std::atof(next().c_str()));
         else if (a == "--exit-after") o.exitAfter = std::atoi(next().c_str());
+        else if (a == "--sequence") o.sequence = next();
+        else if (a == "--out-dir") o.outDir = next();
+        else if (a == "--sequence-frames") o.sequenceFrames = std::atoi(next().c_str());
         else std::fprintf(stderr, "Unknown argument: %s\n", a.c_str());
     }
     return o;
@@ -98,6 +104,50 @@ void applyShot(const std::string& shot, RenderSettings& s, FlyCamera& cam) {
         s.sunElevation = glm::radians(30.0f);
         s.coverage = 0.68f;
     }
+}
+
+float smooth01(float t) { return t * t * (3.0f - 2.0f * t); }
+
+// Scripted clips for the README demo videos. `t` runs 0..1 over the clip; returns simulation time
+// (time-lapsed, so the wind visibly moves the clouds).
+float applySequence(const std::string& name, float t, RenderSettings& s, FlyCamera& cam, const Renderer& r) {
+    auto ground = [&](float x, float z) { return r.terrainHeight(x, z, s.terrainHeight); };
+    float e = smooth01(t);
+    if (name == "timeofday") {
+        // Fixed camera across the valley; the sun swings round and sets in front of it.
+        cam.position = {-15000.0f, ground(-15000.0f, 9000.0f) + 120.0f, 9000.0f};
+        cam.yaw = glm::radians(150.0f);
+        cam.pitch = glm::radians(8.0f);
+        s.sunAzimuth = glm::radians(glm::mix(70.0f, 152.0f, e));
+        s.sunElevation = glm::radians(glm::mix(40.0f, 0.5f, e));
+        s.exposure = glm::mix(1.0f, 2.6f, smooth01(std::clamp((t - 0.4f) / 0.6f, 0.0f, 1.0f)));
+        s.coverage = 0.68f;
+        return 100.0f + t * 900.0f;
+    }
+    if (name == "weather") {
+        // Fixed camera, clear sky building to overcast in a time-lapse.
+        cam.position = {-15000.0f, ground(-15000.0f, 9000.0f) + 120.0f, 9000.0f};
+        cam.yaw = glm::radians(165.0f);
+        cam.pitch = glm::radians(14.0f);
+        s.sunAzimuth = glm::radians(70.0f);
+        s.sunElevation = glm::radians(28.0f);
+        s.coverage = glm::mix(0.42f, 0.84f, e);
+        s.windSpeed = 25.0f;
+        return 100.0f + t * 1200.0f;
+    }
+    // flythrough: along the valley, then climb up through the cloud deck and level off above it.
+    glm::vec2 start{-15000.0f, 9000.0f};
+    glm::vec2 dir{std::sin(glm::radians(150.0f)), -std::cos(glm::radians(150.0f))};
+    glm::vec2 xz = start + dir * (16000.0f * t);
+    float climb = smooth01(std::clamp((t - 0.3f) / 0.7f, 0.0f, 1.0f));
+    float low = ground(xz.x, xz.y) + 180.0f;
+    cam.position = {xz.x, std::max(low, glm::mix(ground(start.x, start.y) + 180.0f, 6800.0f, climb)), xz.y};
+    cam.yaw = glm::radians(150.0f + 25.0f * e);
+    cam.pitch = glm::radians(glm::mix(8.0f, -10.0f, climb));
+    s.sunAzimuth = glm::radians(60.0f);
+    s.sunElevation = glm::radians(24.0f);
+    s.coverage = 0.62f;
+    return 100.0f + t * 60.0f;
 }
 
 void drawUi(Renderer& renderer, RenderSettings& s, FlyCamera& camera, bool& paused, std::string& status) {
@@ -212,7 +262,9 @@ int main(int argc, char** argv) {
     std::unique_ptr<Benchmark> benchmark;
     if (!opt.benchmarkPath.empty()) benchmark = std::make_unique<Benchmark>(opt.benchmarkPath);
     bool screenshotMode = !opt.screenshotPath.empty();
-    if (screenshotMode || benchmark) settings.showUi = false;
+    bool sequenceMode = !opt.sequence.empty();
+    if (screenshotMode || benchmark || sequenceMode) settings.showUi = false;
+    if (sequenceMode) std::filesystem::create_directories(opt.outDir);
     applyShot(opt.shot, settings, camera);
     if (opt.debugView >= 0) settings.debugView = opt.debugView;
     if (!opt.camera.empty()) {
@@ -263,6 +315,18 @@ int main(int argc, char** argv) {
 
             if (benchmark) {
                 if (!benchmark->update(settings, camera, time, renderer)) break;
+            } else if (sequenceMode) {
+                // Warm-up frames at t = 0 let the temporal history converge before recording.
+                constexpr int kWarmup = 60;
+                int index = frame - kWarmup;
+                if (index >= opt.sequenceFrames) break;
+                float t = index <= 0 ? 0.0f : float(index) / float(opt.sequenceFrames - 1);
+                time = applySequence(opt.sequence, t, settings, camera, renderer);
+                if (index >= 0) {
+                    char path[512];
+                    std::snprintf(path, sizeof(path), "%s/frame_%04d.png", opt.outDir.c_str(), index);
+                    renderer.requestScreenshot(path);
+                }
             } else if (screenshotMode) {
                 time = 60.0f + float(frame) / 60.0f;  // deterministic
                 camera.position += camera.forward() * (opt.flySpeed / 60.0f);
