@@ -1,5 +1,7 @@
 # Nimbus
 
+[![build](https://github.com/DarrelFW321/Nimbus/actions/workflows/build.yml/badge.svg)](https://github.com/DarrelFW321/Nimbus/actions/workflows/build.yml)
+
 **Real-Time Volumetric Renderer** · C++20 · Vulkan 1.3 · GLSL + HLSL · RenderDoc
 
 A real-time renderer for physically based volumetric clouds over procedural terrain, with a
@@ -201,7 +203,7 @@ shaders/
 - The terrain is a single warped grid without continuous LOD. Distant vertices pop slightly as the
   camera-centred grid snaps.
 - CI ([.github/workflows/build.yml](.github/workflows/build.yml)) only compiles the renderer and shaders
-  (GitHub runners have no GPU), and has not run yet because the repository has no remote.
+  (GitHub runners have no GPU), so rendering and performance are verified locally.
 
 ## References
 
