@@ -1,0 +1,28 @@
+#version 460
+// Low-resolution sky radiance around the camera, recomputed every frame (sun and camera move).
+
+#include "atmosphere.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, SKYVIEW_LUT_SIZE))) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(SKYVIEW_LUT_SIZE);
+    vec3 rd = skyViewDir(uv);
+    vec3 ro = atmospherePos(u.cameraPos.xyz);
+
+    vec3 T;
+    vec3 L = integrateScattering(ro, rd, 1e9, 32, T);
+
+    // Below the horizon, add the lit ground so reflections / ambient have something plausible.
+    float tBottom = atmoRaySphere(ro, rd, ATMO_BOTTOM);
+    if (tBottom > 0.0) {
+        vec3 p = ro + rd * tBottom;
+        vec3 n = normalize(p);
+        vec3 sunT = sampleTransmittance(length(p), dot(u.sunDir.xyz, n));
+        L += T * sunT * saturate(dot(n, u.sunDir.xyz)) * GROUND_ALBEDO / PI;
+    }
+    imageStore(skyViewImg, pixel, vec4(L * u.sunDir.w, 1.0));
+}

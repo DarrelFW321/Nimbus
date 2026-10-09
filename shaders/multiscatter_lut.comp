@@ -1,0 +1,70 @@
+#version 460
+// Multiple-scattering contribution Psi_ms (Hillaire 2020, section 5.5). Run once.
+// Integrates second-order scattering over the sphere of directions, then sums the
+// geometric series of higher orders as L2 / (1 - f_ms).
+
+#include "atmosphere.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const int DIRS_SQRT = 8;
+const int STEPS = 20;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, MULTISCAT_LUT_SIZE))) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(MULTISCAT_LUT_SIZE);
+    float sunMu = uv.x * 2.0 - 1.0;
+    float r = mix(ATMO_BOTTOM + 0.01, ATMO_TOP - 0.01, uv.y);
+    vec3 ro = vec3(0.0, r, 0.0);
+    vec3 sunDir = vec3(sqrt(max(0.0, 1.0 - sunMu * sunMu)), sunMu, 0.0);
+
+    const float isotropicPhase = 1.0 / (4.0 * PI);
+    vec3 L2 = vec3(0.0);
+    vec3 fms = vec3(0.0);
+
+    for (int iy = 0; iy < DIRS_SQRT; ++iy) {
+        for (int ix = 0; ix < DIRS_SQRT; ++ix) {
+            // Uniform sphere sampling.
+            float cosT = 1.0 - 2.0 * (float(iy) + 0.5) / float(DIRS_SQRT);
+            float phi = 2.0 * PI * (float(ix) + 0.5) / float(DIRS_SQRT);
+            float sinT = sqrt(max(0.0, 1.0 - cosT * cosT));
+            vec3 rd = vec3(sinT * cos(phi), cosT, sinT * sin(phi));
+
+            float tBottom = atmoRaySphere(ro, rd, ATMO_BOTTOM);
+            float tTop = atmoRaySphere(ro, rd, ATMO_TOP);
+            float tMax = tBottom > 0.0 ? tBottom : tTop;
+            float dt = tMax / float(STEPS);
+
+            vec3 T = vec3(1.0);
+            vec3 L = vec3(0.0), f = vec3(0.0);
+            for (int i = 0; i < STEPS; ++i) {
+                vec3 p = ro + rd * (float(i) + 0.3) * dt;
+                float pr = length(p);
+                Medium m = sampleMedium(pr - ATMO_BOTTOM);
+                vec3 sampleT = exp(-m.extinction * dt);
+                vec3 sunT = sampleTransmittance(pr, dot(sunDir, p / pr));
+                float planetShadow = atmoRaySphere(p, sunDir, ATMO_BOTTOM) > 0.0 ? 0.0 : 1.0;
+
+                vec3 S = planetShadow * sunT * m.scattering * isotropicPhase;
+                L += T * (S - S * sampleT) / m.extinction;
+                f += T * (m.scattering - m.scattering * sampleT) / m.extinction;
+                T *= sampleT;
+            }
+            if (tBottom > 0.0) {  // light bounced off the ground
+                vec3 p = ro + rd * tBottom;
+                vec3 n = normalize(p);
+                vec3 sunT = sampleTransmittance(length(p), dot(sunDir, n));
+                L += T * sunT * saturate(dot(n, sunDir)) * GROUND_ALBEDO / PI;
+            }
+            L2 += L;
+            fms += f;
+        }
+    }
+    float invCount = 1.0 / float(DIRS_SQRT * DIRS_SQRT);
+    L2 *= invCount;
+    fms *= invCount * isotropicPhase * 4.0 * PI;  // uniform-phase integral over the sphere
+    vec3 psi = L2 / (1.0 - fms);
+    imageStore(multiScatImg, pixel, vec4(psi, 1.0));
+}

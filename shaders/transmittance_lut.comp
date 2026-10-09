@@ -1,0 +1,28 @@
+#version 460
+// Transmittance from a point (height, view-zenith cosine) to the top of the atmosphere. Run once.
+
+#include "atmosphere.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, TRANSMITTANCE_LUT_SIZE))) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(TRANSMITTANCE_LUT_SIZE);
+    float r, mu;
+    uvToTransmittanceParams(uv, r, mu);
+
+    vec3 ro = vec3(0.0, r, 0.0);
+    vec3 rd = vec3(sqrt(max(0.0, 1.0 - mu * mu)), mu, 0.0);
+    float tMax = atmoRaySphere(ro, rd, ATMO_TOP);
+
+    const int STEPS = 40;
+    float dt = tMax / float(STEPS);
+    vec3 opticalDepth = vec3(0.0);
+    for (int i = 0; i < STEPS; ++i) {
+        vec3 p = ro + rd * (float(i) + 0.5) * dt;
+        opticalDepth += sampleMedium(length(p) - ATMO_BOTTOM).extinction * dt;
+    }
+    imageStore(transmittanceImg, pixel, vec4(exp(-opticalDepth), 1.0));
+}

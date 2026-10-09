@@ -1,0 +1,94 @@
+#version 460
+// Temporal reconstruction of the clouds to full resolution, then compositing over sky / terrain.
+//
+//  * Reproject: find where this pixel's cloud was last frame using the cloud depth.
+//  * Rectify: clamp history to the min/max of the current low-res 3x3 neighbourhood (anti-ghosting).
+//  * Pixels marched this frame blend the fresh sample with history; the other N*N-1 pixels reuse
+//    history and fall back to a bilinear upsample when it is unavailable (disocclusion, screen edge).
+
+#include "atmosphere.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const int DEBUG_FINAL = 0, DEBUG_CLOUDS = 1, DEBUG_TRANSMITTANCE = 2, DEBUG_CLOUD_DEPTH = 3,
+          DEBUG_HISTORY = 4, DEBUG_SHADOW = 5, DEBUG_WEATHER = 6, DEBUG_NOISE = 7, DEBUG_SKYVIEW = 8;
+
+vec3 skyRadiance(vec3 rd) {
+    vec3 sky = sampleSky(rd);
+    // Sun disc with limb darkening.
+    float cosAngle = dot(rd, u.sunDir.xyz);
+    const float sunCos = cos(radians(0.27));
+    if (cosAngle > sunCos) {
+        float r = sqrt(saturate((1.0 - cosAngle) / (1.0 - sunCos)));
+        float limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - r * r));
+        float planet = atmoRaySphere(atmospherePos(u.cameraPos.xyz), rd, ATMO_BOTTOM) > 0.0 ? 0.0 : 1.0;
+        sky += u.sunDir.w * 40.0 * limb * planet * sunTransmittance(u.cameraPos.xyz);
+    }
+    return sky;
+}
+
+void main() {
+    ivec2 fullSize = u.view.yz;
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, fullSize))) return;
+
+    int N = u.recon.x;
+    ivec2 offset = u.recon.yz;
+    ivec2 lowSize = textureSize(cloudLowTex, 0);
+    ivec2 lowPixel = min(pixel / N, lowSize - 1);
+    bool fresh = all(equal(pixel - (pixel / N) * N, offset));
+
+    vec4 current = texelFetch(cloudLowTex, lowPixel, 0);
+    // Low-res texel centres sit at lowPixel * N + offset + 0.5 in full-res pixels.
+    vec2 lowUv = ((vec2(pixel) - vec2(offset)) / float(N) + 0.5) / vec2(lowSize);
+    vec4 upsampled = textureLod(cloudLowTex, lowUv, 0.0);
+
+    vec4 nMin = current, nMax = current;
+    for (int y = -1; y <= 1; ++y)
+    for (int x = -1; x <= 1; ++x) {
+        vec4 s = texelFetch(cloudLowTex, clamp(lowPixel + ivec2(x, y), ivec2(0), lowSize - 1), 0);
+        nMin = min(nMin, s);
+        nMax = max(nMax, s);
+    }
+
+    // Reproject using the cloud depth (far depth for sky still works: rotation-only reprojection).
+    vec3 rd = rayDirection(vec2(pixel) + 0.5);
+    float cloudDepth = min(texelFetch(cloudDepthTex, lowPixel, 0).r, 1e5);
+    vec4 prevClip = u.prevViewProj * vec4(u.cameraPos.xyz + rd * cloudDepth, 1.0);
+    vec2 prevUv = prevClip.xy / prevClip.w * 0.5 + 0.5;
+    bool historyOk = u.recon.w != 0 && prevClip.w > 0.0 && all(greaterThanEqual(prevUv, vec2(0.0))) &&
+                     all(lessThanEqual(prevUv, vec2(1.0)));
+
+    vec4 history = textureLod(historyPrevTex, prevUv, 0.0);
+    vec4 clamped = clamp(history, nMin, nMax);
+
+    vec4 result;
+    float freshWeight = saturate(u.cloudLight.w * float(N * N));
+    if (!historyOk) {
+        result = fresh ? current : upsampled;
+    } else if (fresh) {
+        result = mix(clamped, current, freshWeight);
+    } else {
+        result = clamped;
+    }
+    imageStore(historyCurImg, pixel, result);
+
+    // --- Composite ---------------------------------------------------------------------------
+    float depth = texelFetch(sceneDepthTex, pixel, 0).r;
+    vec3 background = (u.view.w != 0 && depth > 0.0) ? texelFetch(sceneColorTex, pixel, 0).rgb : skyRadiance(rd);
+    vec3 color = background * result.a + result.rgb;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(fullSize);
+    switch (u.view.x) {
+    case DEBUG_CLOUDS:        color = result.rgb; break;
+    case DEBUG_TRANSMITTANCE: color = vec3(result.a); break;
+    case DEBUG_CLOUD_DEPTH:   color = vec3(cloudDepth >= 1e5 ? 0.0 : 1.0 - cloudDepth / 30000.0); break;
+    case DEBUG_HISTORY:       color = !historyOk ? vec3(1, 0, 0) : (fresh ? vec3(0, 1, 0) :
+                                      vec3(length(history - clamped) * 10.0, 0.0, 0.2)); break;
+    case DEBUG_SHADOW:        color = vec3(textureLod(cloudShadowTex, uv, 0.0).r); break;
+    case DEBUG_WEATHER:       color = vec3(textureLod(weatherTex, uv, 0.0).rg, 0.0); break;
+    case DEBUG_NOISE:         color = textureLod(shapeNoiseTex, vec3(uv, fract(u.cameraPos.w * 0.02)), 0.0).rgb; break;
+    case DEBUG_SKYVIEW:       color = textureLod(skyViewTex, uv, 0.0).rgb; break;
+    }
+    imageStore(hdrImg, pixel, vec4(color, 1.0));
+}

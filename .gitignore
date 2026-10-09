@@ -1,0 +1,7 @@
+build/
+build-*/
+.vscode/
+.vs/
+*.rdc
+captures/
+screenshots/

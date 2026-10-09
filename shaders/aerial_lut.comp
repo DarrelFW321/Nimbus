@@ -1,0 +1,44 @@
+#version 460
+// Camera-frustum aerial-perspective volume (Hillaire 2020, section 5.4): 32x32 screen tiles x 32
+// depth slices of in-scattering (rgb) and mean transmittance (a). Each thread marches one screen
+// tile front to back and writes every slice, replacing a per-pixel atmosphere integral in the
+// terrain shader with a single 3D texture fetch.
+
+#include "atmosphere.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const int SUBSTEPS = 2;
+
+void main() {
+    ivec2 tile = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(tile, ivec2(AERIAL_LUT_SIZE)))) return;
+
+    vec2 uv = (vec2(tile) + 0.5) / float(AERIAL_LUT_SIZE);
+    vec3 rd = rayDirectionUv(uv);
+    vec3 ro = atmospherePos(u.cameraPos.xyz);
+    vec3 sunDir = u.sunDir.xyz;
+    float cosTheta = dot(rd, sunDir);
+    float phaseR = rayleighPhase(cosTheta);
+    float phaseM = cornetteShanksPhase(cosTheta, MIE_G);
+
+    vec3 L = vec3(0.0), T = vec3(1.0);
+    float t = 0.0;
+    for (int slice = 0; slice < AERIAL_LUT_SIZE; ++slice) {
+        float tSlice = aerialSliceToKm((float(slice) + 0.5) / float(AERIAL_LUT_SIZE));
+        float dt = (tSlice - t) / float(SUBSTEPS);
+        for (int i = 0; i < SUBSTEPS; ++i) {
+            vec3 p = ro + rd * (t + 0.5 * dt);
+            float r = max(length(p), ATMO_BOTTOM + 0.001);
+            Medium m = sampleMedium(r - ATMO_BOTTOM);
+            vec3 sampleT = exp(-m.extinction * dt);
+            float sunMu = dot(sunDir, p / length(p));
+            vec3 S = sampleTransmittance(r, sunMu) * (m.rayleigh * phaseR + m.mie * phaseM)
+                   + sampleMultiScattering(r, sunMu) * m.scattering;
+            L += T * (S - S * sampleT) / m.extinction;
+            T *= sampleT;
+            t += dt;
+        }
+        imageStore(aerialImg, ivec3(tile, slice), vec4(L * u.sunDir.w, dot(T, vec3(1.0 / 3.0))));
+    }
+}

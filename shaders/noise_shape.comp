@@ -1,0 +1,26 @@
+#version 460
+// 128^3 base-shape noise (Schneider, "The Real-Time Volumetric Cloudscapes of Horizon Zero Dawn").
+// R = Perlin-Worley, GBA = Worley fBm at increasing frequencies. Run once.
+
+#include "common.glsl"
+#include "noise.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+void main() {
+    ivec3 size = imageSize(shapeNoiseImg);
+    ivec3 voxel = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(voxel, size))) return;
+    vec3 uvw = (vec3(voxel) + 0.5) / vec3(size);
+
+    const float freq = 4.0;
+    float perlin = mix(1.0, perlinFbm(uvw, 4.0, 7), 0.5);
+    perlin = abs(perlin * 2.0 - 1.0);  // billowy
+
+    float w1 = worleyFbm(uvw, freq);
+    float w2 = worleyFbm(uvw, freq * 2.0);
+    float w3 = worleyFbm(uvw, freq * 4.0);
+    float perlinWorley = remap(perlin, 0.0, 1.0, w1, 1.0);
+
+    imageStore(shapeNoiseImg, voxel, saturate(vec4(perlinWorley, w1, w2, w3)));
+}

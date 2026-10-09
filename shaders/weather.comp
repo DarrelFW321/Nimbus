@@ -1,0 +1,22 @@
+#version 460
+// Tileable weather map. R = cloud coverage, G = cloud type (0 stratus .. 1 cumulus). Run once.
+
+#include "common.glsl"
+#include "noise.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 size = imageSize(weatherImg);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, size))) return;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+
+    float largeScale = perlinFbm(vec3(uv, 0.5), 3.0, 6) * 0.5 + 0.5;
+    float cells = worleyFbm(vec3(uv, 0.5), 6.0);
+    float coverage = saturate(remap(largeScale * 0.6 + cells * 0.55, 0.35, 1.0, 0.0, 1.0));
+
+    float type = saturate(perlinFbm(vec3(uv, 0.25), 2.0, 3) * 0.7 + 0.6);
+
+    imageStore(weatherImg, pixel, vec4(coverage, type, 0.0, 1.0));
+}

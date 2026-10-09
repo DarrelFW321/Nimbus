@@ -1,0 +1,29 @@
+#version 460
+// Tileable terrain heightmap (normalised 0..1): ridged fBm mountains masked into valleys. Run once.
+
+#include "common.glsl"
+#include "noise.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    ivec2 size = imageSize(heightImg);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, size))) return;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+
+    float ridged = 0.0, amp = 0.5, freq = 4.0, weight = 1.0;
+    for (int i = 0; i < 9; ++i) {
+        float n = 1.0 - abs(gradientNoise(vec3(uv * freq, 0.37 * float(i)), freq) * 1.4);
+        n = n * n * weight;
+        weight = saturate(n * 1.5);
+        ridged += n * amp;
+        freq *= 2.0;
+        amp *= 0.5;
+    }
+    float mask = smoothstep(-0.3, 0.35, perlinFbm(vec3(uv, 0.71), 2.0, 3));
+    float rolling = perlinFbm(vec3(uv, 0.13), 8.0, 4) * 0.5 + 0.5;
+    float h = mix(rolling * 0.08, ridged * 0.9 + rolling * 0.1, mask);
+
+    imageStore(heightImg, pixel, vec4(saturate(h)));
+}

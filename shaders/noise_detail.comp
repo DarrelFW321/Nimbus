@@ -1,0 +1,17 @@
+#version 460
+// 32^3 high-frequency Worley fBm used to erode cloud edges. Run once.
+
+#include "common.glsl"
+#include "noise.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+void main() {
+    ivec3 size = imageSize(detailNoiseImg);
+    ivec3 voxel = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(voxel, size))) return;
+    vec3 uvw = (vec3(voxel) + 0.5) / vec3(size);
+
+    vec3 detail = vec3(worleyFbm(uvw, 2.0), worleyFbm(uvw, 4.0), worleyFbm(uvw, 8.0));
+    imageStore(detailNoiseImg, voxel, vec4(saturate(detail), 1.0));
+}
